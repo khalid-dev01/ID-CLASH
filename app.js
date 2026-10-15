@@ -10,19 +10,58 @@ const POWERUPS_LIST = [
     { id: 'category', name: 'كشف الفئة', icon: 'fa-eye' }
 ];
 
+// --- خوارزمية معالجة النصوص وحساب التشابه (Fuzzy Matching) ---
+function normalizeString(str) {
+    if (!str) return '';
+    return str.toLowerCase()
+        .trim()
+        .replace(/[أإآ]/g, 'ا')
+        .replace(/ة/g, 'ه')
+        .replace(/ى/g, 'ي')
+        .replace(/[\u064B-\u0652]/g, '') // إزالة التشكيل
+        .replace(/\s+/g, ''); // إزالة الفواصل المسافية
+}
+
+function calculateSimilarity(str1, str2) {
+    const s1 = normalizeString(str1);
+    const s2 = normalizeString(str2);
+
+    if (s1 === s2) return 1.0;
+    if (s1.length === 0 || s2.length === 0) return 0.0;
+
+    const matrix = [];
+    for (let i = 0; i <= s2.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= s1.length; j++) matrix[0][j] = j;
+
+    for (let i = 1; i <= s2.length; i++) {
+        for (let j = 1; j <= s1.length; j++) {
+            if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j] + 1
+                );
+            }
+        }
+    }
+
+    const distance = matrix[s2.length][s1.length];
+    const maxLength = Math.max(s1.length, s2.length);
+    return (maxLength - distance) / maxLength;
+}
+
 class IDClashGame {
     constructor() {
         this.cacheDOM();
         this.bindEvents();
-        this.setupSearchLogic();
         
         this.currentRoomCode = null;
         this.playerName = null;
         this.isHost = false;
         this.unsubscribe = null;
         
-        this.searchTimeout = null;
-        this.selectedCharacter = null;
         this.localTimerInterval = null;
         this.roomDataCache = null;
     }
@@ -49,25 +88,23 @@ class IDClashGame {
             ansNo: document.getElementById('btnAnsNo'),
             ansDontKnow: document.getElementById('btnAnsDontKnow'),
             openGuessModal: document.getElementById('btnOpenGuessModal'),
-            closeGuessModal: document.getElementById('btnCloseGuessModal')
+            closeGuessModal: document.getElementById('btnCloseGuessModal'),
+            submitGuess: document.getElementById('btnSubmitGuess')
         };
         
         this.inputs = {
             playerName: document.getElementById('playerName'),
             roomCode: document.getElementById('roomCodeInput'),
-            search: document.getElementById('searchInput'),
+            charName: document.getElementById('charNameInput'),
+            charCategory: document.getElementById('charCategorySelect'),
             question: document.getElementById('questionInput'),
-            guessSearch: document.getElementById('guessSearchInput')
+            guessText: document.getElementById('guessTextInput')
         };
         
         this.displays = {
             roomCode: document.getElementById('displayRoomCode'),
             playersList: document.getElementById('playersList'),
             playerCount: document.getElementById('playerCount'),
-            searchResults: document.getElementById('searchResults'),
-            previewContainer: document.getElementById('selectedIdentityPreview'),
-            previewImage: document.getElementById('previewImage'),
-            previewName: document.getElementById('previewName'),
             waitingLockMsg: document.getElementById('waitingLockMsg'),
             roundTimer: document.getElementById('roundTimerDisplay'),
             turnTimer: document.getElementById('turnTimerDisplay'),
@@ -82,7 +119,6 @@ class IDClashGame {
             activeTurnArea: document.getElementById('activeTurnArea'),
             powerupsContainer: document.getElementById('powerupsContainer'),
             guessModal: document.getElementById('guessModal'),
-            guessSearchResults: document.getElementById('guessSearchResults'),
             gameOverTitle: document.getElementById('gameOverTitle'),
             gameOverSub: document.getElementById('gameOverSub'),
             revealedIdentitiesBox: document.getElementById('revealedIdentitiesBox')
@@ -95,6 +131,7 @@ class IDClashGame {
         this.buttons.createRoom.addEventListener('click', () => this.handleCreateRoom());
         this.buttons.joinRoom.addEventListener('click', () => this.handleJoinRoom());
         this.buttons.startPrep.addEventListener('click', () => this.handleStartPrepPhase());
+        this.buttons.lockIdentity.addEventListener('click', () => this.handleLockIdentity());
         
         this.buttons.sendQuestion.addEventListener('click', () => this.handleSendQuestion());
         this.buttons.ansYes.addEventListener('click', () => this.handleAnswerQuestion('نعم'));
@@ -103,6 +140,7 @@ class IDClashGame {
 
         this.buttons.openGuessModal.addEventListener('click', () => this.displays.guessModal.style.display = 'flex');
         this.buttons.closeGuessModal.addEventListener('click', () => this.displays.guessModal.style.display = 'none');
+        this.buttons.submitGuess.addEventListener('click', () => this.handleMakeGuess());
 
         document.querySelectorAll('.btnLeaveRoom').forEach(btn => {
             btn.addEventListener('click', () => window.location.reload());
@@ -182,60 +220,12 @@ class IDClashGame {
         catch (error) { console.error(error); alert("خطأ."); }
     }
 
-    setupSearchLogic() {
-        this.inputs.search.addEventListener('input', (e) => {
-            clearTimeout(this.searchTimeout);
-            const query = e.target.value.trim();
-            if (query.length < 3) { this.displays.searchResults.innerHTML = ''; return; }
-            this.displays.searchResults.innerHTML = '<li style="padding: 10px; text-align: center;"><i class="fa-solid fa-spinner fa-spin"></i> جاري البحث...</li>';
-            this.searchTimeout = setTimeout(() => this.searchCharactersAPI(query, this.displays.searchResults, (char) => this.selectCharacter(char)), 500);
-        });
-
-        this.inputs.guessSearch.addEventListener('input', (e) => {
-            clearTimeout(this.searchTimeout);
-            const query = e.target.value.trim();
-            if (query.length < 3) { this.displays.guessSearchResults.innerHTML = ''; return; }
-            this.displays.guessSearchResults.innerHTML = '<li style="padding: 10px; text-align: center;"><i class="fa-solid fa-spinner fa-spin"></i> جاري البحث...</li>';
-            this.searchTimeout = setTimeout(() => this.searchCharactersAPI(query, this.displays.guessSearchResults, (char) => this.handleMakeGuess(char)), 500);
-        });
-
-        this.buttons.lockIdentity.addEventListener('click', () => this.handleLockIdentity());
-    }
-
-    async searchCharactersAPI(query, container, callback) {
-        try {
-            const response = await fetch(`https://api.jikan.moe/v4/characters?q=${query}&limit=5`);
-            const data = await response.json();
-            this.renderSearchResults(data.data, container, callback);
-        } catch (error) { console.error(error); container.innerHTML = '<li style="padding: 10px; color: #ff2a6d;">فشل البحث.</li>'; }
-    }
-
-    renderSearchResults(characters, container, callback) {
-        container.innerHTML = '';
-        if (!characters || characters.length === 0) { container.innerHTML = '<li style="padding: 10px;">لا توجد نتائج.</li>'; return; }
-
-        characters.forEach(char => {
-            const li = document.createElement('li');
-            li.className = 'search-result-item';
-            const imageUrl = char.images?.jpg?.image_url || 'https://via.placeholder.com/40x40?text=?';
-            li.innerHTML = `<img src="${imageUrl}"> <div class="search-result-info"><h4>${char.name}</h4></div>`;
-            li.addEventListener('click', () => callback({ name: char.name, imageUrl }));
-            container.appendChild(li);
-        });
-    }
-
-    selectCharacter(char) {
-        this.selectedCharacter = char;
-        this.displays.searchResults.innerHTML = '';
-        this.inputs.search.value = '';
-        this.displays.previewImage.src = char.imageUrl;
-        this.displays.previewName.innerText = char.name;
-        this.displays.previewContainer.style.display = 'block';
-        this.buttons.lockIdentity.disabled = false;
-    }
-
     async handleLockIdentity() {
-        if (!this.selectedCharacter) return;
+        const charName = this.inputs.charName.value.trim();
+        const charCat = this.inputs.charCategory.value;
+
+        if (!charName) { alert("أدخل اسم الشخصية أولاً!"); return; }
+
         this.setBtn(this.buttons.lockIdentity, true, 'جاري التأكيد...');
         
         try {
@@ -248,7 +238,12 @@ class IDClashGame {
 
             const updatedPlayers = players.map(p => {
                 if (p.name === this.playerName) {
-                    return { ...p, identityLocked: true, character: this.selectedCharacter, powerups: myPowerups };
+                    return { 
+                        ...p, 
+                        identityLocked: true, 
+                        character: { name: charName, category: charCat }, 
+                        powerups: myPowerups 
+                    };
                 }
                 return p;
             });
@@ -270,7 +265,7 @@ class IDClashGame {
                     gameLog: [{ type: 'system', text: 'بدأت اللعبة! الهوست يبدأ طرح السؤال الأول.' }]
                 });
             }
-        } catch (error) { console.error(error); alert("خطأ."); }
+        } catch (error) { console.error(error); alert("خطأ في التأكيد."); }
     }
 
     async handleSendQuestion() {
@@ -305,13 +300,12 @@ class IDClashGame {
 
         const newLog = [...data.gameLog, { type: 'answer', text: `الإجابة: ${answerText}` }];
         
-        // التحقق من ميزة الضربة المزدوجة
         let nextTurnIndex = data.currentTurnIndex === 0 ? 1 : 0;
         let keepDouble = false;
         
         if (data.doubleTurnActive) {
-            nextTurnIndex = data.currentTurnIndex; // إبقاء الدور عند نفس السائل
-            keepDouble = false; // استهلاك الميزة
+            nextTurnIndex = data.currentTurnIndex;
+            keepDouble = false;
         }
 
         await updateDoc(roomRef, {
@@ -324,8 +318,13 @@ class IDClashGame {
         });
     }
 
-    async handleMakeGuess(char) {
+    async handleMakeGuess() {
+        const guessedText = this.inputs.guessText.value.trim();
+        if (!guessedText) return;
+
         this.displays.guessModal.style.display = 'none';
+        this.inputs.guessText.value = '';
+
         const roomRef = doc(db, "rooms", this.currentRoomCode);
         const data = this.roomDataCache;
         
@@ -334,19 +333,21 @@ class IDClashGame {
 
         if (myData.guessesLeft <= 0) { alert("استنفذت جميع محاولات التخمين (3/3)!"); return; }
 
-        const isCorrect = opponent.character.name.toLowerCase() === char.name.toLowerCase();
+        // حساب نسبة التشابه لتجاوز الأخطاء الإملائية
+        const similarity = calculateSimilarity(guessedText, opponent.character.name);
+        const isCorrect = similarity >= 0.75; // قبول التخمين لو نسبة التشابه 75% أو أكثر
 
         if (isCorrect) {
             await updateDoc(roomRef, {
                 status: 'ended',
                 winner: this.playerName,
-                endReason: `كشف هوية الخصم بنجاح: (${char.name})`
+                endReason: `كشف هوية الخصم بنجاح: (${opponent.character.name})`
             });
         } else {
             const newGuessesLeft = myData.guessesLeft - 1;
             const updatedPlayers = data.players.map(p => p.name === this.playerName ? { ...p, guessesLeft: newGuessesLeft } : p);
             const nextTurnIndex = data.currentTurnIndex === 0 ? 1 : 0;
-            const newLog = [...data.gameLog, { type: 'system', text: `خمن ${this.playerName} شخصية (${char.name}) وكان التخمين خاطئاً! انتقل الدور للخصم.` }];
+            const newLog = [...data.gameLog, { type: 'system', text: `خمن ${this.playerName} شخصية (${guessedText}) وكان التخمين خاطئاً! انتقل الدور للخصم.` }];
 
             await updateDoc(roomRef, {
                 players: updatedPlayers,
@@ -357,7 +358,6 @@ class IDClashGame {
         }
     }
 
-    // --- البرمجة الشاملة للـ 6 Power-ups ---
     async triggerPowerup(powerupId) {
         const roomRef = doc(db, "rooms", this.currentRoomCode);
         const data = this.roomDataCache;
@@ -374,8 +374,8 @@ class IDClashGame {
             logText = `❄️ جمّد ${this.playerName} الزمن! ضُفت 45 ثانية للجولة.`;
         } 
         else if (powerupId === 'letter') {
-            const firstLetter = opponent.character.name.charAt(0);
-            alert(`🔤 الحرف الأول من هوية الخصم هو: (${firstLetter})`);
+            const firstChar = opponent.character.name.trim().charAt(0);
+            alert(`🔤 الحرف الأول من هوية الخصم هو: (${firstChar})`);
             logText = `🔤 استخدم ${this.playerName} تسريب الحرف الأول!`;
         } 
         else if (powerupId === 'shield') {
@@ -407,7 +407,7 @@ class IDClashGame {
             logText = `🥷 سرق ${this.playerName} عنصراً خاصاً من الخصم!`;
         }
         else if (powerupId === 'category') {
-            alert(`🔍 فئة شخصية الخصم هي: (أنمي / شخصية خيالية)`);
+            alert(`🔍 فئة شخصية الخصم هي: (${opponent.character.category})`);
             logText = `🔍 كشف ${this.playerName} فئة شخصية الخصم!`;
         }
 
@@ -472,7 +472,6 @@ class IDClashGame {
         });
         this.displays.gameLogBox.scrollTop = this.displays.gameLogBox.scrollHeight;
 
-        // إدارة حالات الانتظار والأسئلة
         if (data.pendingQuestion) {
             this.displays.activeTurnArea.style.display = 'none';
             if (data.pendingQuestion.askedBy !== this.playerName) {
@@ -564,8 +563,7 @@ class IDClashGame {
             if (p.character) {
                 this.displays.revealedIdentitiesBox.innerHTML += `
                     <div style="margin-bottom: 10px;">
-                        <img src="${p.character.imageUrl}" style="width: 50px; height: 50px; border-radius: 50%;">
-                        <p><strong>${p.name}:</strong> ${p.character.name}</p>
+                        <p><strong>${p.name}:</strong> ${p.character.name} <span style="font-size: 0.8rem; color: var(--cyan-glow);">(${p.character.category})</span></p>
                     </div>
                 `;
             }
