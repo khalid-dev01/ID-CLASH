@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ID Clash - لعبة كشف الهوية</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glow-orb orb-emerald"></div>
+    <div class="glow-orb orb-coral"></div>
+
+    <main class="main-container">
+        <div class="glass-card">
+            
+            <header class="app-header">
+                <h1 class="game-logo">ID CLASH</h1>
+                <p class="game-subtitle">تحدى أصحابك واكشف الهوية</p>
+            </header>
+
+            <!-- الشاشة 1: الرئيسية -->
+            <section id="lobbyView" class="view-section active">
+                <div class="input-group" style="margin-bottom: 25px;">
+                    <label for="playerName">اسمك في اللعبة</label>
+                    <input type="text" id="playerName" placeholder="أدخل اسمك هنا..." maxlength="15" autocomplete="off">
+                </div>
+                <div class="action-stack">
+                    <button id="btnCreateRoom" class="btn btn-primary">
+                        <i class="fa-solid fa-plus-circle"></i> إنشاء غرفة جديدة
+                    </button>
+                    <button id="btnOpenJoin" class="btn btn-outline">
+                        <i class="fa-solid fa-right-to-bracket"></i> دخول بكود الغرفة
+                    </button>
+                </div>
+            </section>
+
+            <!-- الشاشة 2: الانضمام -->
+            <section id="joinView" class="view-section">
+                <div class="input-group">
+                    <label for="roomCodeInput">كود الغرفة</label>
+                    <input type="text" id="roomCodeInput" placeholder="مثال: X79B" maxlength="6" class="code-input">
+                </div>
+                <div class="action-stack">
+                    <button id="btnJoinRoom" class="btn btn-primary">
+                        <i class="fa-solid fa-gamepad"></i> انضمام الآن
+                    </button>
+                    <button id="btnBackToLobby" class="btn btn-text">
+                        <i class="fa-solid fa-arrow-right"></i> رجوع
+                    </button>
+                </div>
+            </section>
+
+            <!-- الشاشة 3: غرفة الانتظار -->
+            <section id="roomLobbyView" class="view-section">
+                <div class="room-status-badge">
+                    <span>كود الغرفة:</span>
+                    <strong id="displayRoomCode">----</strong>
+                </div>
+                <div class="players-container">
+                    <h3>اللاعبين المتواجدين (<span id="playerCount">0</span>/2)</h3>
+                    <ul id="playersList" class="players-list"></ul>
+                </div>
+                <div class="action-stack">
+                    <button id="btnStartPrep" class="btn btn-primary" disabled>
+                        <i class="fa-solid fa-play"></i> الانتقال لاختيار الهوية
+                    </button>
+                    <button class="btn btn-outline btnLeaveRoom" style="border-color: #ff2a6d; color: #ff2a6d;">
+                        <i class="fa-solid fa-door-open"></i> مغادرة الغرفة
+                    </button>
+                </div>
+            </section>
+
+            <!-- الشاشة 4: اختيار الهوية بدون API -->
+            <section id="identitySelectionView" class="view-section">
+                <div class="room-status-badge">
+                    <span>⏳ مرحلة التجهيز:</span>
+                    <strong>حدد هويتك السرية</strong>
+                </div>
+
+                <div class="input-group">
+                    <label for="charNameInput">اسم الشخصية (عربي أو إنكليزي)</label>
+                    <input type="text" id="charNameInput" placeholder="مثال: ناروتو / ميسي / براد بيت..." autocomplete="off">
+                </div>
+
+                <div class="input-group">
+                    <label for="charCategorySelect">فئة الشخصية</label>
+                    <select id="charCategorySelect" style="width: 100%; padding: 10px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-light); border-radius: 12px; color: var(--text-white); font-size: 0.95rem; outline: none;">
+                        <option value="أنمي / كرتون" style="background: #0f0f1a;">أنمي / كرتون</option>
+                        <option value="رياضة / لاعب" style="background: #0f0f1a;">رياضة / لاعب</option>
+                        <option value="أفلام / مسلسلات" style="background: #0f0f1a;">أفلام / مسلسلات</option>
+                        <option value="شخصية تاريخية / عامة" style="background: #0f0f1a;">شخصية تاريخية / عامة</option>
+                    </select>
+                </div>
+
+                <div class="action-stack" style="margin-top: 15px;">
+                    <button id="btnLockIdentity" class="btn btn-primary">
+                        <i class="fa-solid fa-lock"></i> تأكيد الهوية (Lock-in)
+                    </button>
+                    <p id="waitingLockMsg" style="display: none; color: var(--cyan-glow); font-size: 0.85rem; text-align: center; margin-top: 5px;">في انتظار تأكيد الخصم...</p>
+                </div>
+            </section>
+
+            <!-- الشاشة 5: ساحة اللعب الرئيسية -->
+            <section id="gameBoardView" class="view-section">
+                <div class="game-header-bar">
+                    <div class="timer-badge">⏱️ <span id="roundTimerDisplay">10:00</span></div>
+                    <div class="turn-badge" id="turnIndicator">دورك الآن!</div>
+                    <div class="turn-timer-badge">⏳ <span id="turnTimerDisplay">25</span>s</div>
+                </div>
+
+                <div class="game-dashboard">
+                    <div class="stats-row">
+                        <span>الأسئلة: <strong id="myQuestionsCount">0</strong></span>
+                        <span>التخمينات: <strong id="myGuessesLeft">3/3</strong></span>
+                    </div>
+
+                    <div class="game-log-box" id="gameLogBox">
+                        <div class="log-msg system">بدأت الجولة! حاول كشف شخصية الخصم.</div>
+                    </div>
+
+                    <div id="pendingQuestionArea" class="pending-question-card" style="display: none;">
+                        <p id="pendingQuestionText">سؤال الخصم يظهر هنا...</p>
+                        <div class="answer-btns">
+                            <button class="btn-ans btn-yes" id="btnAnsYes">نعم</button>
+                            <button class="btn-ans btn-no" id="btnAnsNo">لا</button>
+                            <button class="btn-ans btn-dontknow" id="btnAnsDontKnow">لا أعرف (<span id="dontKnowCountDisplay">3</span>)</button>
+                        </div>
+                    </div>
+
+                    <div id="waitingAnswerArea" class="pending-question-card" style="display: none; background: rgba(5, 213, 230, 0.08); border-color: var(--cyan-glow);">
+                        <p style="color: var(--cyan-glow);"><i class="fa-solid fa-spinner fa-spin"></i> بانتظار إجابة الخصم على سؤالك...</p>
+                    </div>
+
+                    <div id="activeTurnArea" class="active-turn-card" style="display: none;">
+                        <div class="input-group">
+                            <input type="text" id="questionInput" placeholder="أكتب سؤالك هنا..." autocomplete="off">
+                        </div>
+                        <div class="turn-actions">
+                            <button id="btnSendQuestion" class="btn btn-primary btn-sm"><i class="fa-solid fa-paper-plane"></i> إرسال السؤال</button>
+                            <button id="btnOpenGuessModal" class="btn btn-outline btn-sm" style="border-color: var(--coral-glow); color: var(--coral-glow);"><i class="fa-solid fa-bullseye"></i> تخمين الهوية</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="powerups-bar">
+                    <h4>عناصرك الخاصة المتاحة:</h4>
+                    <div id="powerupsContainer" class="powerups-list"></div>
+                </div>
+
+                <div class="action-stack" style="margin-top: 15px;">
+                    <button class="btn btn-outline btnLeaveRoom" style="border-color: #ff2a6d; color: #ff2a6d; padding: 8px;">
+                        <i class="fa-solid fa-door-open"></i> انسحاب من اللعبة
+                    </button>
+                </div>
+            </section>
+
+            <!-- الشاشة 6: النتيجة النهائية -->
+            <section id="gameOverView" class="view-section">
+                <div class="game-area" style="text-align: center;">
+                    <h1 id="gameOverTitle" style="font-size: 2.2rem; margin-bottom: 10px;">🏆 انتصار!</h1>
+                    <p id="gameOverSub" style="color: var(--text-muted); margin-bottom: 20px;"></p>
+                    <div id="revealedIdentitiesBox" class="selected-preview" style="background: rgba(255,255,255,0.03);"></div>
+                </div>
+                <div class="action-stack">
+                    <button class="btn btn-primary btnLeaveRoom"><i class="fa-solid fa-house"></i> العودة للقائمة الرئيسية</button>
+                </div>
+            </section>
+
+        </div>
+    </main>
+
+    <!-- نافذة التخمين الفعلي -->
+    <div id="guessModal" class="modal-overlay" style="display: none;">
+        <div class="glass-card modal-box">
+            <h3>تخمين هوية الخصم 🎯</h3>
+            <p style="font-size: 0.8rem; color: var(--coral-glow); margin-bottom: 10px;">أكتب اسم الشخصية التي تتوقعها (النظام يتجاوز الأخطاء الإملائية البسيطة):</p>
+            <div class="input-group">
+                <input type="text" id="guessTextInput" placeholder="أدخل اسم الشخصية..." autocomplete="off">
+            </div>
+            <div class="action-stack">
+                <button id="btnSubmitGuess" class="btn btn-primary"><i class="fa-solid fa-check"></i> تأكيد التخمين</button>
+                <button id="btnCloseGuessModal" class="btn btn-text">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="firebase-config.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>
