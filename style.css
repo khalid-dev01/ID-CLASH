@@ -1,579 +1,494 @@
-import { db } from './firebase-config.js';
-import { doc, setDoc, getDoc, updateDoc, arrayUnion, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-const POWERUPS_LIST = [
-    { id: 'double', name: 'ضربة مزدوجة', icon: 'fa-bolt' },
-    { id: 'freeze', name: 'تجميد الزمن', icon: 'fa-snowflake' },
-    { id: 'letter', name: 'تسريب الحرف', icon: 'fa-font' },
-    { id: 'shield', name: 'درع الفيتو', icon: 'fa-shield-halved' },
-    { id: 'steal', name: 'قرصنة', icon: 'fa-user-ninja' },
-    { id: 'category', name: 'كشف الفئة', icon: 'fa-eye' }
-];
-
-// --- خوارزمية معالجة النصوص وحساب التشابه (Fuzzy Matching) ---
-function normalizeString(str) {
-    if (!str) return '';
-    return str.toLowerCase()
-        .trim()
-        .replace(/[أإآ]/g, 'ا')
-        .replace(/ة/g, 'ه')
-        .replace(/ى/g, 'ي')
-        .replace(/[\u064B-\u0652]/g, '') // إزالة التشكيل
-        .replace(/\s+/g, ''); // إزالة الفواصل المسافية
+:root {
+    --bg-dark: #0f0f1a;
+    --card-bg: rgba(15, 15, 26, 0.75);
+    --cyan-glow: #05d5e6;
+    --cyan-hover: #00f0ff;
+    --coral-glow: #ff2a6d;
+    --emerald-glow: #00e676;
+    --text-white: #ffffff;
+    --text-muted: #a0a0b0;
+    --border-light: rgba(255, 255, 255, 0.12);
 }
 
-function calculateSimilarity(str1, str2) {
-    const s1 = normalizeString(str1);
-    const s2 = normalizeString(str2);
-
-    if (s1 === s2) return 1.0;
-    if (s1.length === 0 || s2.length === 0) return 0.0;
-
-    const matrix = [];
-    for (let i = 0; i <= s2.length; i++) matrix[i] = [i];
-    for (let j = 0; j <= s1.length; j++) matrix[0][j] = j;
-
-    for (let i = 1; i <= s2.length; i++) {
-        for (let j = 1; j <= s1.length; j++) {
-            if (s2.charAt(i - 1) === s1.charAt(j - 1)) {
-                matrix[i][j] = matrix[i - 1][j - 1];
-            } else {
-                matrix[i][j] = Math.min(
-                    matrix[i - 1][j - 1] + 1,
-                    matrix[i][j - 1] + 1,
-                    matrix[i - 1][j] + 1
-                );
-            }
-        }
-    }
-
-    const distance = matrix[s2.length][s1.length];
-    const maxLength = Math.max(s1.length, s2.length);
-    return (maxLength - distance) / maxLength;
+* { 
+    box-sizing: border-box; 
+    margin: 0; 
+    padding: 0; 
+    font-family: 'Cairo', sans-serif; 
 }
 
-class IDClashGame {
-    constructor() {
-        this.cacheDOM();
-        this.bindEvents();
-        
-        this.currentRoomCode = null;
-        this.playerName = null;
-        this.isHost = false;
-        this.unsubscribe = null;
-        
-        this.localTimerInterval = null;
-        this.roomDataCache = null;
-    }
-
-    cacheDOM() {
-        this.views = {
-            lobby: document.getElementById('lobbyView'),
-            join: document.getElementById('joinView'),
-            room: document.getElementById('roomLobbyView'),
-            identity: document.getElementById('identitySelectionView'),
-            game: document.getElementById('gameBoardView'),
-            gameOver: document.getElementById('gameOverView')
-        };
-        
-        this.buttons = {
-            createRoom: document.getElementById('btnCreateRoom'),
-            openJoin: document.getElementById('btnOpenJoin'),
-            backToLobby: document.getElementById('btnBackToLobby'),
-            joinRoom: document.getElementById('btnJoinRoom'),
-            startPrep: document.getElementById('btnStartPrep'),
-            lockIdentity: document.getElementById('btnLockIdentity'),
-            sendQuestion: document.getElementById('btnSendQuestion'),
-            ansYes: document.getElementById('btnAnsYes'),
-            ansNo: document.getElementById('btnAnsNo'),
-            ansDontKnow: document.getElementById('btnAnsDontKnow'),
-            openGuessModal: document.getElementById('btnOpenGuessModal'),
-            closeGuessModal: document.getElementById('btnCloseGuessModal'),
-            submitGuess: document.getElementById('btnSubmitGuess')
-        };
-        
-        this.inputs = {
-            playerName: document.getElementById('playerName'),
-            roomCode: document.getElementById('roomCodeInput'),
-            charName: document.getElementById('charNameInput'),
-            charCategory: document.getElementById('charCategorySelect'),
-            question: document.getElementById('questionInput'),
-            guessText: document.getElementById('guessTextInput')
-        };
-        
-        this.displays = {
-            roomCode: document.getElementById('displayRoomCode'),
-            playersList: document.getElementById('playersList'),
-            playerCount: document.getElementById('playerCount'),
-            waitingLockMsg: document.getElementById('waitingLockMsg'),
-            roundTimer: document.getElementById('roundTimerDisplay'),
-            turnTimer: document.getElementById('turnTimerDisplay'),
-            turnIndicator: document.getElementById('turnIndicator'),
-            myQuestionsCount: document.getElementById('myQuestionsCount'),
-            myGuessesLeft: document.getElementById('myGuessesLeft'),
-            dontKnowCountDisplay: document.getElementById('dontKnowCountDisplay'),
-            gameLogBox: document.getElementById('gameLogBox'),
-            pendingQuestionArea: document.getElementById('pendingQuestionArea'),
-            waitingAnswerArea: document.getElementById('waitingAnswerArea'),
-            pendingQuestionText: document.getElementById('pendingQuestionText'),
-            activeTurnArea: document.getElementById('activeTurnArea'),
-            powerupsContainer: document.getElementById('powerupsContainer'),
-            guessModal: document.getElementById('guessModal'),
-            gameOverTitle: document.getElementById('gameOverTitle'),
-            gameOverSub: document.getElementById('gameOverSub'),
-            revealedIdentitiesBox: document.getElementById('revealedIdentitiesBox')
-        };
-    }
-
-    bindEvents() {
-        this.buttons.openJoin.addEventListener('click', () => { if (this.validateName()) this.switchView(this.views.join); });
-        this.buttons.backToLobby.addEventListener('click', () => this.switchView(this.views.lobby));
-        this.buttons.createRoom.addEventListener('click', () => this.handleCreateRoom());
-        this.buttons.joinRoom.addEventListener('click', () => this.handleJoinRoom());
-        this.buttons.startPrep.addEventListener('click', () => this.handleStartPrepPhase());
-        this.buttons.lockIdentity.addEventListener('click', () => this.handleLockIdentity());
-        
-        this.buttons.sendQuestion.addEventListener('click', () => this.handleSendQuestion());
-        this.buttons.ansYes.addEventListener('click', () => this.handleAnswerQuestion('نعم'));
-        this.buttons.ansNo.addEventListener('click', () => this.handleAnswerQuestion('لا'));
-        this.buttons.ansDontKnow.addEventListener('click', () => this.handleAnswerQuestion('لا أعرف'));
-
-        this.buttons.openGuessModal.addEventListener('click', () => this.displays.guessModal.style.display = 'flex');
-        this.buttons.closeGuessModal.addEventListener('click', () => this.displays.guessModal.style.display = 'none');
-        this.buttons.submitGuess.addEventListener('click', () => this.handleMakeGuess());
-
-        document.querySelectorAll('.btnLeaveRoom').forEach(btn => {
-            btn.addEventListener('click', () => window.location.reload());
-        });
-    }
-
-    switchView(activeView) {
-        Object.values(this.views).forEach(view => view.classList.remove('active'));
-        activeView.classList.add('active');
-    }
-
-    validateName() {
-        const name = this.inputs.playerName.value.trim();
-        if (!name) { alert("أكتب اسمك أول!"); return false; }
-        this.playerName = name;
-        return name;
-    }
-
-    generateRoomCode() {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-    }
-
-    async handleCreateRoom() {
-        if (!this.validateName()) return;
-        this.setBtn(this.buttons.createRoom, true, 'جاري الإنشاء...');
-        this.currentRoomCode = this.generateRoomCode();
-        this.isHost = true;
-
-        try {
-            await setDoc(doc(db, "rooms", this.currentRoomCode), {
-                code: this.currentRoomCode, status: 'waiting', createdAt: new Date(),
-                players: [{ name: this.playerName, isHost: true, identityLocked: false, character: null, dontKnowCount: 0, guessesLeft: 3, questionsAsked: 0, powerups: [] }]
-            });
-            this.setupRoomUI();
-        } catch (error) { console.error(error); alert("خطأ في الإنشاء."); } 
-        finally { this.setBtn(this.buttons.createRoom, false, '<i class="fa-solid fa-plus-circle"></i> إنشاء غرفة جديدة'); }
-    }
-
-    async handleJoinRoom() {
-        if (!this.validateName()) return;
-        const code = this.inputs.roomCode.value.trim().toUpperCase();
-        if (!code) { alert("أدخل الكود!"); return; }
-
-        this.setBtn(this.buttons.joinRoom, true, 'جاري الدخول...');
-        this.isHost = false;
-
-        try {
-            const roomRef = doc(db, "rooms", code);
-            const roomSnap = await getDoc(roomRef);
-
-            if (roomSnap.exists()) {
-                const data = roomSnap.data();
-                if (data.status !== 'waiting') { alert("لا يمكن الدخول، اللعبة جارية."); return; }
-                if (data.players.length >= 2) { alert("الغرفة ممتلئة."); return; }
-                
-                await updateDoc(roomRef, { 
-                    players: arrayUnion({ name: this.playerName, isHost: false, identityLocked: false, character: null, dontKnowCount: 0, guessesLeft: 3, questionsAsked: 0, powerups: [] }) 
-                });
-                this.currentRoomCode = code;
-                this.setupRoomUI();
-            } else { alert("الكود غير صحيح."); }
-        } catch (error) { console.error(error); alert("خطأ في الاتصال."); } 
-        finally { this.setBtn(this.buttons.joinRoom, false, '<i class="fa-solid fa-gamepad"></i> انضمام الآن'); }
-    }
-
-    setupRoomUI() {
-        this.displays.roomCode.innerText = this.currentRoomCode;
-        this.buttons.startPrep.style.display = this.isHost ? 'flex' : 'none';
-        this.switchView(this.views.room);
-        this.listenToRoom();
-    }
-
-    async handleStartPrepPhase() {
-        if (!this.isHost) return;
-        try { await updateDoc(doc(db, "rooms", this.currentRoomCode), { status: 'prep' }); } 
-        catch (error) { console.error(error); alert("خطأ."); }
-    }
-
-    async handleLockIdentity() {
-        const charName = this.inputs.charName.value.trim();
-        const charCat = this.inputs.charCategory.value;
-
-        if (!charName) { alert("أدخل اسم الشخصية أولاً!"); return; }
-
-        this.setBtn(this.buttons.lockIdentity, true, 'جاري التأكيد...');
-        
-        try {
-            const roomRef = doc(db, "rooms", this.currentRoomCode);
-            const roomSnap = await getDoc(roomRef);
-            let players = roomSnap.data().players;
-            
-            const shuffledPowerups = [...POWERUPS_LIST].sort(() => 0.5 - Math.random());
-            const myPowerups = [shuffledPowerups[0].id, shuffledPowerups[1].id];
-
-            const updatedPlayers = players.map(p => {
-                if (p.name === this.playerName) {
-                    return { 
-                        ...p, 
-                        identityLocked: true, 
-                        character: { name: charName, category: charCat }, 
-                        powerups: myPowerups 
-                    };
-                }
-                return p;
-            });
-
-            await updateDoc(roomRef, { players: updatedPlayers });
-            this.displays.waitingLockMsg.style.display = 'block';
-            this.setBtn(this.buttons.lockIdentity, true, 'تم التأكيد');
-
-            const allLocked = updatedPlayers.every(p => p.identityLocked === true);
-            if (allLocked && updatedPlayers.length === 2) {
-                await updateDoc(roomRef, { 
-                    status: 'playing',
-                    currentTurnIndex: 0,
-                    doubleTurnActive: false,
-                    turnStartTime: Date.now(),
-                    roundStartTime: Date.now(),
-                    roundDuration: 600,
-                    pendingQuestion: null,
-                    gameLog: [{ type: 'system', text: 'بدأت اللعبة! الهوست يبدأ طرح السؤال الأول.' }]
-                });
-            }
-        } catch (error) { console.error(error); alert("خطأ في التأكيد."); }
-    }
-
-    async handleSendQuestion() {
-        const qText = this.inputs.question.value.trim();
-        if (!qText) return;
-
-        this.inputs.question.value = '';
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        const data = this.roomDataCache;
-
-        const updatedPlayers = data.players.map(p => p.name === this.playerName ? { ...p, questionsAsked: p.questionsAsked + 1 } : p);
-        const newLog = [...data.gameLog, { type: 'question', text: `${this.playerName}: ${qText}` }];
-
-        await updateDoc(roomRef, {
-            players: updatedPlayers,
-            pendingQuestion: { text: qText, askedBy: this.playerName },
-            gameLog: newLog,
-            turnStartTime: Date.now()
-        });
-    }
-
-    async handleAnswerQuestion(answerText) {
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        const data = this.roomDataCache;
-
-        let updatedPlayers = [...data.players];
-        if (answerText === 'لا أعرف') {
-            const myData = updatedPlayers.find(p => p.name === this.playerName);
-            if (myData.dontKnowCount >= 3) { alert("استنفذت خيار لا أعرف (3 مرات كحد أقصى)!"); return; }
-            updatedPlayers = updatedPlayers.map(p => p.name === this.playerName ? { ...p, dontKnowCount: p.dontKnowCount + 1 } : p);
-        }
-
-        const newLog = [...data.gameLog, { type: 'answer', text: `الإجابة: ${answerText}` }];
-        
-        let nextTurnIndex = data.currentTurnIndex === 0 ? 1 : 0;
-        let keepDouble = false;
-        
-        if (data.doubleTurnActive) {
-            nextTurnIndex = data.currentTurnIndex;
-            keepDouble = false;
-        }
-
-        await updateDoc(roomRef, {
-            players: updatedPlayers,
-            pendingQuestion: null,
-            gameLog: newLog,
-            currentTurnIndex: nextTurnIndex,
-            doubleTurnActive: keepDouble,
-            turnStartTime: Date.now()
-        });
-    }
-
-    async handleMakeGuess() {
-        const guessedText = this.inputs.guessText.value.trim();
-        if (!guessedText) return;
-
-        this.displays.guessModal.style.display = 'none';
-        this.inputs.guessText.value = '';
-
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        const data = this.roomDataCache;
-        
-        const opponent = data.players.find(p => p.name !== this.playerName);
-        const myData = data.players.find(p => p.name === this.playerName);
-
-        if (myData.guessesLeft <= 0) { alert("استنفذت جميع محاولات التخمين (3/3)!"); return; }
-
-        // حساب نسبة التشابه لتجاوز الأخطاء الإملائية
-        const similarity = calculateSimilarity(guessedText, opponent.character.name);
-        const isCorrect = similarity >= 0.75; // قبول التخمين لو نسبة التشابه 75% أو أكثر
-
-        if (isCorrect) {
-            await updateDoc(roomRef, {
-                status: 'ended',
-                winner: this.playerName,
-                endReason: `كشف هوية الخصم بنجاح: (${opponent.character.name})`
-            });
-        } else {
-            const newGuessesLeft = myData.guessesLeft - 1;
-            const updatedPlayers = data.players.map(p => p.name === this.playerName ? { ...p, guessesLeft: newGuessesLeft } : p);
-            const nextTurnIndex = data.currentTurnIndex === 0 ? 1 : 0;
-            const newLog = [...data.gameLog, { type: 'system', text: `خمن ${this.playerName} شخصية (${guessedText}) وكان التخمين خاطئاً! انتقل الدور للخصم.` }];
-
-            await updateDoc(roomRef, {
-                players: updatedPlayers,
-                currentTurnIndex: nextTurnIndex,
-                gameLog: newLog,
-                turnStartTime: Date.now()
-            });
-        }
-    }
-
-    async triggerPowerup(powerupId) {
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        const data = this.roomDataCache;
-        const myData = data.players.find(p => p.name === this.playerName);
-        const opponent = data.players.find(p => p.name !== this.playerName);
-
-        const updatedMyPowerups = myData.powerups.filter(p => p !== powerupId);
-        let updatedPlayers = data.players.map(p => p.name === this.playerName ? { ...p, powerups: updatedMyPowerups } : p);
-
-        let logText = `استخدم ${this.playerName} عنصر خاص!`;
-
-        if (powerupId === 'freeze') {
-            await updateDoc(roomRef, { roundDuration: data.roundDuration + 45 });
-            logText = `❄️ جمّد ${this.playerName} الزمن! ضُفت 45 ثانية للجولة.`;
-        } 
-        else if (powerupId === 'letter') {
-            const firstChar = opponent.character.name.trim().charAt(0);
-            alert(`🔤 الحرف الأول من هوية الخصم هو: (${firstChar})`);
-            logText = `🔤 استخدم ${this.playerName} تسريب الحرف الأول!`;
-        } 
-        else if (powerupId === 'shield') {
-            if (!data.pendingQuestion || data.pendingQuestion.askedBy === this.playerName) {
-                alert("الدرع يُستخدم فقط عند توجيه سؤال لك من الخصم!");
-                return;
-            }
-            logText = `🛡️ فعّل ${this.playerName} درع الفيتو ورفض السؤال!`;
-            const nextTurnIndex = data.currentTurnIndex === 0 ? 1 : 0;
-            await updateDoc(roomRef, { pendingQuestion: null, currentTurnIndex: nextTurnIndex });
-        }
-        else if (powerupId === 'double') {
-            logText = `⚡ فعّل ${this.playerName} الضربة المزدوجة! وسيطرح سؤالين متتاليين.`;
-            await updateDoc(roomRef, { doubleTurnActive: true });
-        }
-        else if (powerupId === 'steal') {
-            if (opponent.powerups.length === 0) {
-                alert("الخصم لا يملك أي عناصر خاصة لسرقتها!");
-                return;
-            }
-            const stolenP = opponent.powerups[0];
-            const updatedOpponentPowerups = opponent.powerups.slice(1);
-            
-            updatedPlayers = updatedPlayers.map(p => {
-                if (p.name === this.playerName) return { ...p, powerups: [...updatedMyPowerups, stolenP] };
-                if (p.name === opponent.name) return { ...p, powerups: updatedOpponentPowerups };
-                return p;
-            });
-            logText = `🥷 سرق ${this.playerName} عنصراً خاصاً من الخصم!`;
-        }
-        else if (powerupId === 'category') {
-            alert(`🔍 فئة شخصية الخصم هي: (${opponent.character.category})`);
-            logText = `🔍 كشف ${this.playerName} فئة شخصية الخصم!`;
-        }
-
-        const newLog = [...data.gameLog, { type: 'system', text: logText }];
-        await updateDoc(roomRef, { players: updatedPlayers, gameLog: newLog });
-    }
-
-    listenToRoom() {
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        this.unsubscribe = onSnapshot(roomRef, (docSnap) => {
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                this.roomDataCache = data;
-                
-                if (data.status === 'waiting') {
-                    this.displays.playerCount.innerText = data.players.length;
-                    this.displays.playersList.innerHTML = ''; 
-                    data.players.forEach(p => {
-                        const li = document.createElement('li');
-                        li.innerHTML = `${p.isHost ? '<i class="fa-solid fa-crown" style="color: gold;"></i>' : '<i class="fa-solid fa-user"></i>'} ${p.name}`;
-                        this.displays.playersList.appendChild(li);
-                    });
-                    if (this.isHost) this.buttons.startPrep.disabled = data.players.length !== 2;
-                }
-                
-                if (data.status === 'prep') {
-                    if (this.views.room.classList.contains('active')) this.switchView(this.views.identity);
-                }
-
-                if (data.status === 'playing') {
-                    if (!this.views.game.classList.contains('active')) this.switchView(this.views.game);
-                    this.renderGameBoard(data);
-                }
-
-                if (data.status === 'ended') {
-                    this.renderGameOver(data);
-                }
-            }
-        });
-    }
-
-    renderGameBoard(data) {
-        const activePlayer = data.players[data.currentTurnIndex];
-        const isMyTurn = activePlayer.name === this.playerName;
-        const myData = data.players.find(p => p.name === this.playerName);
-
-        this.startLocalTimers(data.turnStartTime, data.roundStartTime, data.roundDuration, isMyTurn);
-
-        this.displays.turnIndicator.innerText = isMyTurn ? 'دورك الآن!' : `دور ${activePlayer.name}`;
-        this.displays.turnIndicator.style.color = isMyTurn ? 'var(--cyan-glow)' : 'var(--coral-glow)';
-        
-        this.displays.myQuestionsCount.innerText = myData.questionsAsked;
-        this.displays.myGuessesLeft.innerText = `${myData.guessesLeft}/3`;
-        this.displays.dontKnowCountDisplay.innerText = 3 - myData.dontKnowCount;
-
-        this.displays.gameLogBox.innerHTML = '';
-        data.gameLog.forEach(log => {
-            const div = document.createElement('div');
-            div.className = `log-msg ${log.type}`;
-            div.innerText = log.text;
-            this.displays.gameLogBox.appendChild(div);
-        });
-        this.displays.gameLogBox.scrollTop = this.displays.gameLogBox.scrollHeight;
-
-        if (data.pendingQuestion) {
-            this.displays.activeTurnArea.style.display = 'none';
-            if (data.pendingQuestion.askedBy !== this.playerName) {
-                this.displays.pendingQuestionArea.style.display = 'block';
-                this.displays.waitingAnswerArea.style.display = 'none';
-                this.displays.pendingQuestionText.innerText = data.pendingQuestion.text;
-            } else {
-                this.displays.pendingQuestionArea.style.display = 'none';
-                this.displays.waitingAnswerArea.style.display = 'block';
-            }
-        } else {
-            this.displays.pendingQuestionArea.style.display = 'none';
-            this.displays.waitingAnswerArea.style.display = 'none';
-            this.displays.activeTurnArea.style.display = isMyTurn ? 'block' : 'none';
-        }
-
-        this.displays.powerupsContainer.innerHTML = '';
-        myData.powerups.forEach(pId => {
-            const pInfo = POWERUPS_LIST.find(p => p.id === pId);
-            if (pInfo) {
-                const card = document.createElement('div');
-                card.className = 'powerup-card';
-                card.innerHTML = `<i class="fa-solid ${pInfo.icon}"></i> ${pInfo.name}`;
-                card.addEventListener('click', () => this.triggerPowerup(pId));
-                this.displays.powerupsContainer.appendChild(card);
-            }
-        });
-    }
-
-    startLocalTimers(turnStart, roundStart, duration, isMyTurn) {
-        clearInterval(this.localTimerInterval);
-        this.localTimerInterval = setInterval(() => {
-            const now = Date.now();
-            
-            const turnElapsed = Math.floor((now - turnStart) / 1000);
-            const turnRemaining = Math.max(0, 25 - turnElapsed);
-            this.displays.turnTimer.innerText = turnRemaining;
-
-            const roundElapsed = Math.floor((now - roundStart) / 1000);
-            const roundRemaining = Math.max(0, duration - roundElapsed);
-            const mins = Math.floor(roundRemaining / 60);
-            const secs = roundRemaining % 60;
-            this.displays.roundTimer.innerText = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-
-            if (turnRemaining === 0 && isMyTurn) {
-                clearInterval(this.localTimerInterval);
-                this.handleAnswerQuestion('تخطى (انتهى الوقت)');
-            }
-
-            if (roundRemaining === 0 && this.isHost) {
-                clearInterval(this.localTimerInterval);
-                this.handleTimeOutEndGame();
-            }
-        }, 1000);
-    }
-
-    async handleTimeOutEndGame() {
-        const roomRef = doc(db, "rooms", this.currentRoomCode);
-        const data = this.roomDataCache;
-
-        const p1 = data.players[0];
-        const p2 = data.players[1];
-        let winner = 'تعادل (Draw)';
-        
-        if (p1.questionsAsked < p2.questionsAsked) winner = p1.name;
-        else if (p2.questionsAsked < p1.questionsAsked) winner = p2.name;
-
-        await updateDoc(roomRef, { status: 'ended', winner, endReason: 'انتهى الوقت العام للجولة (حُسمت بالأسئلة الأقل)' });
-    }
-
-    renderGameOver(data) {
-        clearInterval(this.localTimerInterval);
-        this.switchView(this.views.gameOver);
-        
-        if (data.winner === 'تعادل (Draw)') {
-            this.displays.gameOverTitle.innerText = "🤝 تعادل!";
-            this.displays.gameOverSub.innerText = data.endReason;
-        } else if (data.winner === this.playerName) {
-            this.displays.gameOverTitle.innerText = "🏆 انتصار!";
-            this.displays.gameOverSub.innerText = data.endReason;
-        } else {
-            this.displays.gameOverTitle.innerText = "💀 خسارة!";
-            this.displays.gameOverTitle.style.color = "var(--coral-glow)";
-            this.displays.gameOverSub.innerText = `الفائز هو ${data.winner}`;
-        }
-
-        this.displays.revealedIdentitiesBox.innerHTML = '';
-        data.players.forEach(p => {
-            if (p.character) {
-                this.displays.revealedIdentitiesBox.innerHTML += `
-                    <div style="margin-bottom: 10px;">
-                        <p><strong>${p.name}:</strong> ${p.character.name} <span style="font-size: 0.8rem; color: var(--cyan-glow);">(${p.character.category})</span></p>
-                    </div>
-                `;
-            }
-        });
-    }
-
-    setBtn(btn, isLoading, text) {
-        btn.disabled = isLoading;
-        btn.innerHTML = isLoading ? `<i class="fa-solid fa-spinner fa-spin"></i> ${text}` : text;
-    }
+body {
+    background-color: var(--bg-dark); 
+    color: var(--text-white);
+    min-height: 100vh; 
+    display: flex; 
+    justify-content: center; 
+    align-items: center;
+    overflow-x: hidden; 
+    position: relative;
 }
 
-document.addEventListener('DOMContentLoaded', () => new IDClashGame());
+.glow-orb { 
+    position: absolute; 
+    border-radius: 50%; 
+    filter: blur(100px); 
+    z-index: 0; 
+    pointer-events: none; 
+}
+
+.orb-emerald { 
+    width: 280px; 
+    height: 280px; 
+    background: rgba(0, 230, 118, 0.18); 
+    top: -60px; 
+    left: -60px; 
+}
+
+.orb-coral { 
+    width: 320px; 
+    height: 320px; 
+    background: rgba(255, 42, 109, 0.18); 
+    bottom: -80px; 
+    right: -80px; 
+}
+
+.main-container { 
+    width: 100%; 
+    max-width: 460px; 
+    padding: 15px; 
+    z-index: 10; 
+}
+
+.glass-card {
+    background: var(--card-bg); 
+    backdrop-filter: blur(20px); 
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--border-light); 
+    border-radius: 28px; 
+    padding: 28px 22px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); 
+    text-align: center;
+}
+
+.game-logo {
+    font-size: 2.5rem; 
+    font-weight: 900; 
+    background: linear-gradient(135deg, var(--cyan-glow), var(--coral-glow));
+    background-clip: text;
+    -webkit-background-clip: text; 
+    -webkit-text-fill-color: transparent; 
+    letter-spacing: 2px; 
+    margin-bottom: 2px;
+}
+
+.game-subtitle { 
+    font-size: 0.85rem; 
+    color: var(--text-muted); 
+    font-weight: 600; 
+    margin-bottom: 20px; 
+}
+
+.view-section { 
+    display: none; 
+    opacity: 0; 
+    transform: translateY(10px); 
+    transition: all 0.3s ease; 
+}
+
+.view-section.active { 
+    display: block; 
+    opacity: 1; 
+    transform: translateY(0); 
+}
+
+.input-group { 
+    text-align: right; 
+    margin-bottom: 12px; 
+}
+
+.input-group label { 
+    display: block; 
+    font-size: 0.8rem; 
+    color: var(--text-muted); 
+    margin-bottom: 4px; 
+    font-weight: 600; 
+}
+
+.input-group input {
+    width: 100%; 
+    padding: 10px 14px; 
+    background: rgba(255, 255, 255, 0.05); 
+    border: 1px solid var(--border-light);
+    border-radius: 12px; 
+    color: var(--text-white); 
+    font-size: 0.95rem; 
+    outline: none; 
+    transition: 0.3s;
+}
+
+.input-group input:focus { 
+    border-color: var(--cyan-glow); 
+    box-shadow: 0 0 10px rgba(5, 213, 230, 0.2); 
+}
+
+.code-input { 
+    text-transform: uppercase; 
+    letter-spacing: 4px; 
+    font-weight: bold; 
+    text-align: center; 
+}
+
+.action-stack { 
+    display: flex; 
+    flex-direction: column; 
+    gap: 10px; 
+    margin-top: 10px; 
+}
+
+.btn {
+    width: 100%; 
+    padding: 12px; 
+    border-radius: 12px; 
+    font-size: 0.95rem; 
+    font-weight: 700;
+    cursor: pointer; 
+    border: none; 
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    gap: 8px; 
+    transition: 0.25s;
+}
+
+.btn-sm { 
+    padding: 8px 12px; 
+    font-size: 0.85rem; 
+    border-radius: 8px; 
+}
+
+.btn-primary { 
+    background-color: var(--cyan-glow); 
+    color: #000; 
+    box-shadow: 0 0 16px rgba(5, 213, 230, 0.35); 
+}
+
+.btn-primary:hover:not(:disabled) { 
+    background-color: var(--cyan-hover); 
+    box-shadow: 0 0 25px rgba(5, 213, 230, 0.6); 
+    transform: translateY(-2px); 
+}
+
+.btn-primary:disabled { 
+    opacity: 0.4; 
+    cursor: not-allowed; 
+    box-shadow: none; 
+}
+
+.btn-outline { 
+    background: transparent; 
+    color: var(--cyan-glow); 
+    border: 1.5px solid var(--cyan-glow); 
+}
+
+.btn-outline:hover { 
+    background: rgba(5, 213, 230, 0.08); 
+}
+
+.btn-text { 
+    background: transparent; 
+    color: var(--text-muted); 
+}
+
+.btn-text:hover { 
+    color: var(--text-white); 
+}
+
+.room-status-badge {
+    background: rgba(255, 255, 255, 0.05); 
+    border: 1px dashed var(--cyan-glow); 
+    padding: 10px;
+    border-radius: 12px; 
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    gap: 10px; 
+    margin-bottom: 15px;
+}
+
+.room-status-badge strong { 
+    color: var(--cyan-glow); 
+    font-size: 1.2rem; 
+    letter-spacing: 2px; 
+}
+
+.players-container { 
+    text-align: right; 
+    margin-bottom: 15px; 
+}
+
+.players-container h3 { 
+    font-size: 0.85rem; 
+    color: var(--text-muted); 
+    margin-bottom: 8px; 
+}
+
+.players-list { 
+    list-style: none; 
+    display: flex; 
+    flex-direction: column; 
+    gap: 6px; 
+}
+
+.players-list li {
+    background: rgba(255, 255, 255, 0.04); 
+    padding: 8px 12px; 
+    border-radius: 8px;
+    font-size: 0.9rem; 
+    display: flex; 
+    align-items: center; 
+    gap: 10px;
+}
+
+.search-results-container {
+    background: rgba(0, 0, 0, 0.25); 
+    border-radius: 12px;
+    max-height: 160px; 
+    overflow-y: auto; 
+    margin-bottom: 10px; 
+    border: 1px solid var(--border-light);
+}
+
+.search-results-list { 
+    list-style: none; 
+    padding: 0; 
+    margin: 0; 
+}
+
+.search-result-item {
+    display: flex; 
+    align-items: center; 
+    gap: 12px; 
+    padding: 8px 12px;
+    cursor: pointer; 
+    border-bottom: 1px solid rgba(255,255,255,0.05); 
+    transition: 0.2s; 
+    text-align: right;
+}
+
+.search-result-item:hover { 
+    background: rgba(5, 213, 230, 0.1); 
+}
+
+.search-result-item img { 
+    width: 35px; 
+    height: 35px; 
+    border-radius: 50%; 
+    object-fit: cover; 
+}
+
+.search-result-info h4 { 
+    font-size: 0.85rem; 
+    color: var(--text-white); 
+    margin: 0; 
+}
+
+.selected-preview {
+    background: rgba(5, 213, 230, 0.05); 
+    border: 1px solid var(--cyan-glow);
+    border-radius: 14px; 
+    padding: 12px; 
+    text-align: center; 
+    margin-bottom: 12px;
+}
+
+.selected-preview img { 
+    width: 70px; 
+    height: 70px; 
+    border-radius: 50%; 
+    object-fit: cover; 
+    border: 2px solid var(--cyan-glow); 
+}
+
+.selected-preview h3 { 
+    color: var(--cyan-glow); 
+    font-size: 1.05rem; 
+}
+
+.game-header-bar {
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center;
+    background: rgba(0,0,0,0.3); 
+    padding: 8px 12px; 
+    border-radius: 12px;
+    border: 1px solid var(--border-light); 
+    margin-bottom: 12px; 
+    font-size: 0.85rem;
+}
+
+.turn-badge { 
+    font-weight: bold; 
+    color: var(--cyan-glow); 
+    padding: 3px 8px; 
+    border-radius: 6px; 
+    background: rgba(5, 213, 230, 0.1); 
+}
+
+.game-dashboard { 
+    background: rgba(255,255,255,0.03); 
+    border-radius: 16px; 
+    padding: 12px; 
+    border: 1px solid var(--border-light); 
+}
+
+.stats-row { 
+    display: flex; 
+    justify-content: space-between; 
+    font-size: 0.75rem; 
+    color: var(--text-muted); 
+    margin-bottom: 8px; 
+}
+
+.game-log-box {
+    height: 160px; 
+    overflow-y: auto; 
+    background: rgba(0,0,0,0.3); 
+    border-radius: 10px;
+    padding: 10px; 
+    font-size: 0.85rem; 
+    display: flex; 
+    flex-direction: column; 
+    gap: 8px;
+    text-align: right; 
+    margin-bottom: 10px; 
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.log-msg { 
+    padding: 6px 10px; 
+    border-radius: 8px; 
+    max-width: 90%; 
+}
+
+.log-msg.system { 
+    background: rgba(255,255,255,0.05); 
+    color: var(--text-muted); 
+    text-align: center; 
+    max-width: 100%; 
+    font-size: 0.75rem; 
+}
+
+.log-msg.question { 
+    background: rgba(5, 213, 230, 0.12); 
+    border-right: 3px solid var(--cyan-glow); 
+    align-self: flex-start; 
+}
+
+.log-msg.answer { 
+    background: rgba(0, 230, 118, 0.12); 
+    border-right: 3px solid var(--emerald-glow); 
+    align-self: flex-end; 
+}
+
+.pending-question-card { 
+    background: rgba(255, 42, 109, 0.08); 
+    border: 1px solid var(--coral-glow); 
+    border-radius: 10px; 
+    padding: 10px; 
+    margin-bottom: 8px; 
+    text-align: right; 
+}
+
+.answer-btns { 
+    display: flex; 
+    gap: 6px; 
+    margin-top: 8px; 
+}
+
+.btn-ans { 
+    flex: 1; 
+    padding: 6px; 
+    border-radius: 6px; 
+    font-weight: bold; 
+    border: none; 
+    cursor: pointer; 
+    font-size: 0.8rem; 
+}
+
+.btn-yes { 
+    background: var(--emerald-glow); 
+    color: #000; 
+}
+
+.btn-no { 
+    background: var(--coral-glow); 
+    color: #fff; 
+}
+
+.btn-dontknow { 
+    background: rgba(255,255,255,0.2); 
+    color: #fff; 
+}
+
+.turn-actions { 
+    display: flex; 
+    gap: 8px; 
+    margin-top: 6px; 
+}
+
+.powerups-bar { 
+    text-align: right; 
+    margin-top: 10px; 
+}
+
+.powerups-bar h4 { 
+    font-size: 0.75rem; 
+    color: var(--text-muted); 
+    margin-bottom: 6px; 
+}
+
+.powerups-list { 
+    display: flex; 
+    gap: 6px; 
+    flex-wrap: wrap; 
+}
+
+.powerup-card {
+    flex: 1; 
+    min-width: 45%; 
+    background: rgba(255,255,255,0.05); 
+    border: 1px solid var(--cyan-glow);
+    padding: 6px 8px; 
+    border-radius: 8px; 
+    font-size: 0.75rem; 
+    cursor: pointer; 
+    transition: 0.2s;
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    gap: 5px; 
+    color: var(--text-white);
+}
+
+.powerup-card:hover { 
+    background: rgba(5, 213, 230, 0.15); 
+}
+
+.modal-overlay {
+    position: fixed; 
+    top: 0; 
+    left: 0; 
+    width: 100%; 
+    height: 100%;
+    background: rgba(0,0,0,0.8); 
+    backdrop-filter: blur(8px);
+    display: flex; 
+    justify-content: center; 
+    align-items: center; 
+    z-index: 100;
+}
+
+.modal-box { 
+    width: 90%; 
+    max-width: 380px; 
+}
