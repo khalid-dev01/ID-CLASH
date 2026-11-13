@@ -1,0 +1,13 @@
+{
+  "name": "idclash-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot index.js",
+    "start": "bun index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}
